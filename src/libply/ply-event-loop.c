@@ -378,7 +378,6 @@ ply_event_loop_update_source_event_mask (ply_event_loop_t   *loop,
 {
   ply_list_node_t *node;
   struct epoll_event event = { 0 };
-  int status;
 
   assert (loop != NULL);
   assert (source != NULL);
@@ -410,7 +409,12 @@ ply_event_loop_update_source_event_mask (ply_event_loop_t   *loop,
 
   if (source->is_getting_polled)
     {
+      int status;
+
       status = epoll_ctl (loop->epoll_fd, EPOLL_CTL_MOD, source->fd, &event);
+
+      if (status < 0)
+         ply_trace ("failed to modify epoll event mask for fd %d: %m", source->fd);
     }
 }
 
@@ -487,7 +491,7 @@ ply_event_loop_new (void)
 
   loop = calloc (1, sizeof (ply_event_loop_t));
 
-  loop->epoll_fd = epoll_create (PLY_EVENT_LOOP_NUM_EVENT_HANDLERS);
+  loop->epoll_fd =  epoll_create1(EPOLL_CLOEXEC);
   loop->wakeup_time = PLY_EVENT_LOOP_NO_TIMED_WAKEUP;
 
   assert (loop->epoll_fd >= 0);
@@ -637,7 +641,6 @@ ply_event_loop_remove_source_node (ply_event_loop_t *loop,
                                    ply_list_node_t  *source_node)
 {
   ply_event_source_t *source;
-  int status;
 
   source = (ply_event_source_t *) ply_list_node_get_data (source_node);
 
@@ -645,7 +648,12 @@ ply_event_loop_remove_source_node (ply_event_loop_t *loop,
 
   if (source->is_getting_polled)
     {
+      int status;
+
       status = epoll_ctl (loop->epoll_fd, EPOLL_CTL_DEL, source->fd, NULL);
+
+      if (status < 0)
+        ply_trace ("failed to delete fd %d from epoll watch list: %m", source->fd);
       source->is_getting_polled = false;
     }
 
@@ -676,9 +684,7 @@ ply_event_loop_free_sources (ply_event_loop_t *loop)
   while (node != NULL)
     {
       ply_list_node_t *next_node;
-      ply_event_source_t *source;
 
-      source = (ply_event_source_t *) ply_list_node_get_data (node);
       next_node = ply_list_get_next_node (loop->sources, node);
       ply_event_loop_remove_source_node (loop, node);
       node = next_node;
@@ -1121,11 +1127,9 @@ static void
 ply_event_loop_free_timeout_watches (ply_event_loop_t *loop)
 {
   ply_list_node_t *node;
-  double now;
 
   assert (loop != NULL);
 
-  now = ply_get_timestamp ();
   node = ply_list_get_first_node (loop->timeout_watches);
   while (node != NULL)
     {
@@ -1181,25 +1185,16 @@ static void
 ply_event_loop_disconnect_source (ply_event_loop_t           *loop,
                                   ply_event_source_t         *source)
 {
-  ply_trace ("disconnecting source with fd %d", source->fd);
   ply_event_loop_handle_disconnect_for_source (loop, source);
-  ply_trace ("done disconnecting source with fd %d", source->fd);
 
   /* at this point, we've told the event loop users about the
    * fd disconnection, so we can invalidate any outstanding
    * watches and free the destinations.
    */
-  ply_trace ("freeing watches for source with fd %d", source->fd);
   ply_event_loop_free_watches_for_source (loop, source);
-  ply_trace ("done freeing watches for source with fd %d", source->fd);
-  ply_trace ("freeing destinations for source with fd %d", source->fd);
   ply_event_loop_free_destinations_for_source (loop, source);
-  ply_trace ("done freeing destinations for source with fd %d", source->fd);
   assert (ply_list_get_length (source->destinations) == 0);
-
-  ply_trace ("removing source with fd %d from event loop", source->fd);
   ply_event_loop_remove_source (loop, source);
-  ply_trace ("done removing source with fd %d from event loop", source->fd);
 }
 
 static void
@@ -1251,12 +1246,9 @@ void
 ply_event_loop_process_pending_events (ply_event_loop_t *loop)
 {
   int number_of_received_events, i;
-  struct epoll_event *events = NULL;
+  static struct epoll_event events[PLY_EVENT_LOOP_NUM_EVENT_HANDLERS];
 
   assert (loop != NULL);
-
-  events =
-        alloca (PLY_EVENT_LOOP_NUM_EVENT_HANDLERS * sizeof (struct epoll_event));
 
   memset (events, -1,
           PLY_EVENT_LOOP_NUM_EVENT_HANDLERS * sizeof (struct epoll_event));
@@ -1274,10 +1266,8 @@ ply_event_loop_process_pending_events (ply_event_loop_t *loop)
        }
 
      number_of_received_events = epoll_wait (loop->epoll_fd, events,
-                                             sizeof (events), timeout);
-
-     ply_event_loop_handle_timeouts (loop);
-
+                                             PLY_EVENT_LOOP_NUM_EVENT_HANDLERS,
+                                             timeout);
      if (number_of_received_events < 0)
        {
          if (errno != EINTR && errno != EAGAIN)
@@ -1286,19 +1276,24 @@ ply_event_loop_process_pending_events (ply_event_loop_t *loop)
              return;
            }
        }
-    }
-  while ((number_of_received_events < 0) && ((errno == EINTR) || (errno == EAGAIN)));
+     else
+       {
+         /* Reference all sources, so they stay alive for the duration of this
+          * iteration of the loop.
+          */
+         for (i = 0; i < number_of_received_events; i++)
+           {
+             ply_event_source_t *source;
+             source = (ply_event_source_t *) (events[i].data.ptr);
 
-  /* first reference all sources, so they stay alive for the duration of this
-   * iteration of the loop
-   */
-  for (i = 0; i < number_of_received_events; i++)
-    {
-      ply_event_source_t *source;
-      source = (ply_event_source_t *) (events[i].data.ptr);
+             ply_event_source_take_reference (source);
+           }
+       }
 
-      ply_event_source_take_reference (source);
+     /* First handle timeouts */
+     ply_event_loop_handle_timeouts (loop);
     }
+  while (number_of_received_events < 0);
 
   /* Then process the incoming events
    */
@@ -1372,88 +1367,4 @@ ply_event_loop_run (ply_event_loop_t *loop)
   return loop->exit_code;
 }
 
-#ifdef PLY_EVENT_LOOP_ENABLE_TEST
-
-static ply_event_loop_t *loop;
-
-static void
-alrm_signal_handler (void)
-{
-  write (1, "times up!\n", sizeof ("times up!\n") - 1);
-  ply_event_loop_exit (loop, 0);
-}
-
-static void
-usr1_signal_handler (void)
-{
-  write (1, "got sigusr1\n", sizeof ("got sigusr1\n") - 1);
-}
-
-static void
-hangup_signal_handler (void)
-{
-  write (1, "got hangup\n", sizeof ("got hangup\n") - 1);
-}
-
-static void
-terminate_signal_handler (void)
-{
-  write (1, "got terminate\n", sizeof ("got terminate\n") - 1);
-  ply_event_loop_exit (loop, 0);
-}
-
-static void
-line_received_handler (void)
-{
-  char line[512] = { 0 };
-  printf ("Received line: ");
-  fflush (stdout);
-
-  fgets (line, sizeof (line), stdin);
-  printf ("%s", line);
-}
-
-static void
-on_timeout (ply_event_loop_t *loop)
-{
-  printf ("timeout elapsed\n");
-}
-
-int
-main (int    argc,
-      char **argv)
-{
-  int exit_code;
-
-  loop = ply_event_loop_new ();
-
-  ply_event_loop_watch_signal (loop, SIGHUP,
-                             (ply_event_handler_t) hangup_signal_handler,
-                             NULL);
-  ply_event_loop_watch_signal (loop, SIGTERM,
-                             (ply_event_handler_t)
-                             terminate_signal_handler, NULL);
-  ply_event_loop_watch_signal (loop, SIGUSR1,
-                             (ply_event_handler_t)
-                             usr1_signal_handler, NULL);
-  ply_event_loop_watch_signal (loop, SIGALRM,
-                             (ply_event_handler_t)
-                             alrm_signal_handler, NULL);
-
-  ply_event_loop_watch_for_timeout (loop, 2.0,
-                                    (ply_event_loop_timeout_handler_t)
-                                    on_timeout, loop);
-  ply_event_loop_watch_fd (loop, 0, PLY_EVENT_LOOP_FD_STATUS_HAS_DATA,
-                          (ply_event_handler_t) line_received_handler,
-                          (ply_event_handler_t) line_received_handler,
-                          NULL);
-
-  alarm (5);
-  exit_code = ply_event_loop_run (loop);
-
-  ply_event_loop_free (loop);
-
-  return exit_code;
-}
-#endif /* PLY_EVENT_LOOP_ENABLE_TEST */
 /* vim: set ts=4 sw=4 expandtab autoindent cindent cino={.5s,(0: */

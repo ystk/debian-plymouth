@@ -19,11 +19,14 @@
  *
  * Written by: Charlie Brej <cbrej@cs.man.ac.uk>
  */
-#define _GNU_SOURCE
+
+#include "config.h"
+
 #include "ply-image.h"
 #include "ply-label.h"
 #include "ply-pixel-buffer.h"
 #include "ply-utils.h"
+#include "ply-logger.h"
 #include "script.h"
 #include "script-parse.h"
 #include "script-object.h"
@@ -34,8 +37,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "config.h"
 
 #include "script-lib-image.script.h"
 
@@ -158,8 +159,10 @@ static script_return_t image_text (script_state_t *state,
   script_lib_image_data_t *data = user_data;
   ply_pixel_buffer_t *image;
   ply_label_t *label;
-  script_obj_t *alpha_obj;
+  script_obj_t *alpha_obj, *font_obj, *align_obj;
   int width, height;
+  int align = PLY_LABEL_ALIGN_LEFT;
+  char *font;
   
   char *text = script_obj_hash_get_string (state->local, "text");
   
@@ -178,10 +181,41 @@ static script_return_t image_text (script_state_t *state,
     alpha = 1;
   script_obj_unref(alpha_obj);
 
+  font_obj = script_obj_hash_peek_element (state->local, "font");
+
+  if (script_obj_is_string (font_obj))
+    font = script_obj_as_string (font_obj);
+  else
+    font = NULL;
+
+  script_obj_unref(font_obj);
+
+  align_obj = script_obj_hash_peek_element(state->local, "align");
+
+  if (script_obj_is_string(align_obj)) {
+    char *align_str = script_obj_as_string(align_obj);
+
+    if(!strcmp("left", align_str))
+      align = PLY_LABEL_ALIGN_LEFT;
+    else if(!strcmp("center", align_str))
+      align = PLY_LABEL_ALIGN_CENTER;
+    else if(!strcmp("right", align_str))
+      align = PLY_LABEL_ALIGN_RIGHT;
+    else
+      ply_error("Unrecognized Image.Text alignment string '%s'. "
+	      "Expecting 'left', 'center', or 'right'\n",
+		align_str);
+    free(align_str);
+  }
+  script_obj_unref(align_obj);
+
   if (!text) return script_return_obj_null ();
 
   label = ply_label_new ();
   ply_label_set_text (label, text);
+  if (font)
+    ply_label_set_font (label, font);
+  ply_label_set_alignment(label, align);
   ply_label_set_color (label, red, green, blue, alpha);
   ply_label_show (label, NULL, 0, 0);
   
@@ -192,6 +226,7 @@ static script_return_t image_text (script_state_t *state,
   ply_label_draw_area (label, image, 0, 0, width, height);
   
   free (text);
+  free (font);
   ply_label_free (label);
   
   return script_return_obj (script_obj_new_native (image, data->class));
@@ -245,6 +280,8 @@ script_lib_image_data_t *script_lib_image_setup (script_state_t *state,
                               "green",
                               "blue",
                               "alpha",
+                              "font",
+                              "align",
                               NULL);
 
   script_obj_unref (image_hash);

@@ -49,6 +49,7 @@ struct _ply_renderer
   const ply_renderer_plugin_interface_t *plugin_interface;
   ply_renderer_backend_t *backend;
 
+  ply_renderer_type_t type;
   char *device_name;
   ply_terminal_t *terminal;
 
@@ -62,12 +63,15 @@ typedef const ply_renderer_plugin_interface_t *
 static void ply_renderer_unload_plugin (ply_renderer_t *renderer);
 
 ply_renderer_t *
-ply_renderer_new (const char    * device_name,
-                  ply_terminal_t *terminal)
+ply_renderer_new (ply_renderer_type_t  renderer_type,
+                  const char          *device_name,
+                  ply_terminal_t      *terminal)
 {
   ply_renderer_t *renderer;
 
   renderer = calloc (1, sizeof (struct _ply_renderer));
+
+  renderer->type = renderer_type;
 
   if (device_name != NULL)
     renderer->device_name = strdup (device_name);
@@ -91,6 +95,12 @@ ply_renderer_free (ply_renderer_t *renderer)
 
   free (renderer->device_name);
   free (renderer);
+}
+
+const char *
+ply_renderer_get_device_name (ply_renderer_t *renderer)
+{
+  return renderer->device_name;
 }
 
 static bool
@@ -217,51 +227,62 @@ ply_renderer_unmap_from_device (ply_renderer_t *renderer)
   renderer->is_mapped = false;
 }
 
+static bool
+ply_renderer_open_plugin (ply_renderer_t *renderer,
+                          const char     *plugin_path)
+{
+  ply_trace ("trying to open renderer plugin %s", plugin_path);
+
+  if (!ply_renderer_load_plugin (renderer, plugin_path))
+    return false;
+
+  if (!ply_renderer_open_device (renderer))
+    {
+      ply_trace ("could not open rendering device for plugin %s",
+                 plugin_path);
+      ply_renderer_unload_plugin (renderer);
+      return false;
+    }
+
+  if (!ply_renderer_query_device (renderer))
+    {
+      ply_trace ("could not query rendering device for plugin %s",
+                 plugin_path);
+      ply_renderer_close_device (renderer);
+      ply_renderer_unload_plugin (renderer);
+      return false;
+    }
+
+  ply_trace ("opened renderer plugin %s", plugin_path);
+  return true;
+}
+
 bool
 ply_renderer_open (ply_renderer_t *renderer)
 {
   int i;
 
-  /* FIXME: at some point we may want to make this
-   * part more dynamic (so you don't have to edit this
-   * list to add a new renderer)
-   */
-  const char *known_plugins[] =
+  struct
     {
-      PLYMOUTH_PLUGIN_PATH "renderers/x11.so",
-      PLYMOUTH_PLUGIN_PATH "renderers/drm.so",
-      PLYMOUTH_PLUGIN_PATH "renderers/frame-buffer.so",
-      NULL
+      ply_renderer_type_t  type;
+      const char          *path;
+    } known_plugins[] =
+    {
+      { PLY_RENDERER_TYPE_X11, PLYMOUTH_PLUGIN_PATH "renderers/x11.so" },
+      { PLY_RENDERER_TYPE_DRM, PLYMOUTH_PLUGIN_PATH "renderers/drm.so" },
+      { PLY_RENDERER_TYPE_FRAME_BUFFER, PLYMOUTH_PLUGIN_PATH "renderers/frame-buffer.so" },
+      { PLY_RENDERER_TYPE_NONE, NULL }
     };
 
-  for (i = 0; known_plugins[i] != NULL; i++)
+  for (i = 0; known_plugins[i].type != PLY_RENDERER_TYPE_NONE; i++)
     {
-      const char *plugin_path;
-
-      plugin_path = known_plugins[i];
-
-      if (!ply_renderer_load_plugin (renderer, plugin_path))
-        continue;
-
-      if (!ply_renderer_open_device (renderer))
+      if (renderer->type == known_plugins[i].type ||
+          renderer->type == PLY_RENDERER_TYPE_AUTO)
         {
-          ply_trace ("could not open rendering device for plugin %s",
-                     plugin_path);
-          ply_renderer_unload_plugin (renderer);
-          continue;
+          if (ply_renderer_open_plugin (renderer, known_plugins[i].path))
+            return true;
         }
-
-      if (!ply_renderer_query_device (renderer))
-        {
-          ply_trace ("could not query rendering device for plugin %s",
-                     plugin_path);
-          ply_renderer_close_device (renderer);
-          ply_renderer_unload_plugin (renderer);
-          continue;
-        }
-
-      return true;
-  }
+    }
 
   ply_trace ("could not find suitable rendering plugin");
   return false;

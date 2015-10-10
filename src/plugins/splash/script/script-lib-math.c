@@ -19,7 +19,10 @@
  *
  * Written by: Charlie Brej <cbrej@cs.man.ac.uk>
  */
-#define _GNU_SOURCE
+
+#include "config.h"
+
+#include "ply-utils.h"
 #include "script.h"
 #include "script-parse.h"
 #include "script-execute.h"
@@ -31,7 +34,6 @@
 #include <string.h>
 #include <math.h>
 
-#include "config.h"
 
 #include "script-lib-math.script.h"
 
@@ -64,6 +66,8 @@ static script_return_t script_lib_math_random (script_state_t *state,
 script_lib_math_data_t *script_lib_math_setup (script_state_t *state)
 {
   script_lib_math_data_t *data = malloc (sizeof (script_lib_math_data_t));
+
+  srand ((int) ply_get_timestamp ());
 
   script_obj_t *math_hash = script_obj_hash_get_element (state->global, "Math");
   script_add_native_function (math_hash,

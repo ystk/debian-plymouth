@@ -48,9 +48,10 @@ struct _ply_terminal_session
   ply_event_loop_t *loop;
   char **argv;
   ply_fd_watch_t   *fd_watch;
+  ply_terminal_session_flags_t attach_flags;
 
   ply_terminal_session_output_handler_t output_handler;
-  ply_terminal_session_done_handler_t   done_handler;
+  ply_terminal_session_hangup_handler_t hangup_handler;
   void                                 *user_data;
 
   uint32_t is_running : 1;
@@ -147,7 +148,8 @@ ply_terminal_session_free (ply_terminal_session_t *session)
 
   ply_free_string_array (session->argv);
 
-  close (session->pseudoterminal_master_fd);
+  if (session->pseudoterminal_master_fd >= 0)
+    close (session->pseudoterminal_master_fd);
   free (session);
 }
 
@@ -212,8 +214,12 @@ ply_terminal_session_unredirect_console (ply_terminal_session_t *session)
   assert (session->console_is_redirected);
 
   fd = open ("/dev/console", O_RDWR | O_NOCTTY);
-  if (fd >= 0)
+  if (fd >= 0) {
     ioctl (fd, TIOCCONS);
+    close (fd);
+  } else {
+    ply_trace ("couldn't open /dev/console to stop redirecting it: %m");
+  }
 
   session->console_is_redirected = false;
 }
@@ -266,7 +272,7 @@ ply_terminal_session_run (ply_terminal_session_t              *session,
                           ply_terminal_session_flags_t         flags,
                           ply_terminal_session_begin_handler_t begin_handler,
                           ply_terminal_session_output_handler_t output_handler,
-                          ply_terminal_session_done_handler_t  done_handler,
+                          ply_terminal_session_hangup_handler_t hangup_handler,
                           void                                *user_data)
 {
   pid_t pid;
@@ -275,7 +281,7 @@ ply_terminal_session_run (ply_terminal_session_t              *session,
   assert (session != NULL);
   assert (session->loop != NULL);
   assert (!session->is_running);
-  assert (session->done_handler == NULL);
+  assert (session->hangup_handler == NULL);
 
   run_in_parent = (flags & PLY_TERMINAL_SESSION_FLAGS_RUN_IN_PARENT) != 0;
   look_in_path = (flags & PLY_TERMINAL_SESSION_FLAGS_LOOK_IN_PATH) != 0;
@@ -317,7 +323,7 @@ ply_terminal_session_run (ply_terminal_session_t              *session,
     {
       session->is_running = true;
       session->output_handler = output_handler;
-      session->done_handler = done_handler;
+      session->hangup_handler = hangup_handler;
       session->user_data = user_data;
       ply_terminal_session_start_logging (session);
 
@@ -342,7 +348,7 @@ bool
 ply_terminal_session_attach (ply_terminal_session_t               *session,
                              ply_terminal_session_flags_t          flags,
                              ply_terminal_session_output_handler_t output_handler,
-                             ply_terminal_session_done_handler_t   done_handler,
+                             ply_terminal_session_hangup_handler_t   hangup_handler,
                              int                                   ptmx,
                              void                                 *user_data)
 {
@@ -351,7 +357,7 @@ ply_terminal_session_attach (ply_terminal_session_t               *session,
   assert (session != NULL);
   assert (session->loop != NULL);
   assert (!session->is_running);
-  assert (session->done_handler == NULL);
+  assert (session->hangup_handler == NULL);
 
   should_redirect_console = 
     (flags & PLY_TERMINAL_SESSION_FLAGS_REDIRECT_CONSOLE) != 0;
@@ -388,8 +394,9 @@ ply_terminal_session_attach (ply_terminal_session_t               *session,
 
   session->is_running = true;
   session->output_handler = output_handler;
-  session->done_handler = done_handler;
+  session->hangup_handler = hangup_handler;
   session->user_data = user_data;
+  session->attach_flags = flags;
   ply_terminal_session_start_logging (session);
 
   return true;
@@ -418,7 +425,7 @@ ply_terminal_session_detach (ply_terminal_session_t       *session)
     }
 
   session->output_handler = NULL;
-  session->done_handler = NULL;
+  session->hangup_handler = NULL;
   session->user_data = NULL;
 
   session->is_running = false;
@@ -470,22 +477,42 @@ ply_terminal_session_on_new_data (ply_terminal_session_t *session,
 static void
 ply_terminal_session_on_hangup (ply_terminal_session_t *session)
 {
-  ply_terminal_session_done_handler_t done_handler;
+  ply_terminal_session_hangup_handler_t  hangup_handler;
+  ply_terminal_session_output_handler_t  output_handler;
+  void                                  *user_data;
+  ply_terminal_session_flags_t           attach_flags;
+  bool                                   created_terminal_device;
 
   assert (session != NULL);
 
-  done_handler = session->done_handler;
+  ply_trace ("got hang up on terminal session fd");
+  hangup_handler = session->hangup_handler;
+  output_handler = session->output_handler;
+  user_data = session->user_data;
+  attach_flags = session->attach_flags;
+  created_terminal_device = session->created_terminal_device;
 
   ply_logger_flush (session->logger);
 
   session->is_running = false;
+  ply_trace ("stopping terminal logging");
   ply_terminal_session_stop_logging (session);
-  session->done_handler = NULL;
+  session->hangup_handler = NULL;
 
-  if (done_handler != NULL)
-    done_handler (session->user_data, session);
+  if (hangup_handler != NULL)
+    hangup_handler (session->user_data, session);
 
   ply_terminal_session_detach (session);
+
+  /* session ripped away, try to take it back
+   */
+  if (created_terminal_device)
+    {
+      ply_trace ("Attempting to reattach to console");
+      ply_terminal_session_attach (session, attach_flags,
+                                   output_handler, hangup_handler,
+                                   -1, user_data);
+    }
 }
 
 static void 
@@ -496,6 +523,7 @@ ply_terminal_session_start_logging (ply_terminal_session_t *session)
   assert (session != NULL);
   assert (session->logger != NULL);
 
+  ply_trace ("logging incoming console messages");
   if (!ply_logger_is_logging (session->logger))
     ply_logger_toggle_logging (session->logger);
 
@@ -519,6 +547,7 @@ ply_terminal_session_stop_logging (ply_terminal_session_t *session)
   assert (session != NULL);
   assert (session->logger != NULL);
 
+  ply_trace ("stopping logging of incoming console messages");
   if (ply_logger_is_logging (session->logger))
     ply_logger_toggle_logging (session->logger);
 
@@ -558,57 +587,4 @@ ply_terminal_session_close_log (ply_terminal_session_t *session)
   return ply_logger_close_file (session->logger);
 }
 
-#ifdef PLY_TERMINAL_SESSION_ENABLE_TEST
-
-#include <stdio.h>
-
-#include "ply-event-loop.h"
-#include "ply-terminal-session.h"
-
-static void
-on_finished (ply_event_loop_t *loop)
-{
-  ply_event_loop_exit (loop, 0);
-}
-
-int
-main (int    argc,
-      char **argv)
-{
-  ply_event_loop_t *loop;
-  ply_terminal_session_t *session;
-  int exit_code;
-  ply_terminal_session_flags_t flags;
-
-  exit_code = 0;
-
-  loop = ply_event_loop_new ();
-
-  session = ply_terminal_session_new ((const char * const *) (argv + 1));
-
-  flags = PLY_TERMINAL_SESSION_FLAGS_RUN_IN_PARENT;
-  flags |= PLY_TERMINAL_SESSION_FLAGS_LOOK_IN_PATH;
-
-  ply_terminal_session_attach_to_event_loop (session, loop);
-
-  if (!ply_terminal_session_run (session, flags, 
-                                 (ply_terminal_session_begin_handler_t) NULL,
-                                 (ply_terminal_session_output_handler_t) NULL,
-                                 (ply_terminal_session_done_handler_t) 
-                                 on_finished, loop))
-    {
-      perror ("could not start terminal session");
-      return errno;
-    }
-
-  ply_terminal_session_open_log (session, "foo.log");
-
-  exit_code = ply_event_loop_run (loop);
-
-  ply_terminal_session_free (session);
-
-  return exit_code;
-}
-
-#endif /* PLY_TERMINAL_SESSION_ENABLE_TEST */
 /* vim: set ts=4 sw=4 expandtab autoindent cindent cino={.5s,(0: */

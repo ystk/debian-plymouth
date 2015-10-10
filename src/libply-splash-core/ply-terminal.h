@@ -33,7 +33,8 @@
 typedef struct _ply_terminal ply_terminal_t;
 typedef void (* ply_terminal_active_vt_changed_handler_t) (void           *user_data,
                                                            ply_terminal_t *terminal);
-
+typedef void (* ply_terminal_input_handler_t) (void           *user_data,
+                                               ply_terminal_t *terminal);
 typedef enum
 {
   PLY_TERMINAL_COLOR_BLACK = 0,
@@ -90,6 +91,7 @@ void ply_terminal_set_mode (ply_terminal_t     *terminal,
 void ply_terminal_ignore_mode_changes (ply_terminal_t *terminal,
                                        bool            should_ignore);
 
+const char *ply_terminal_get_name (ply_terminal_t *terminal);
 int ply_terminal_get_vt_number (ply_terminal_t *terminal);
 bool ply_terminal_activate_vt (ply_terminal_t *terminal);
 bool ply_terminal_deactivate_vt (ply_terminal_t *terminal);
@@ -103,6 +105,13 @@ void ply_terminal_watch_for_active_vt_change (ply_terminal_t *terminal,
 void ply_terminal_stop_watching_for_active_vt_change (ply_terminal_t *terminal,
                                                       ply_terminal_active_vt_changed_handler_t active_vt_changed_handler,
                                                       void *user_data);
+
+void ply_terminal_watch_for_input (ply_terminal_t *terminal,
+                                   ply_terminal_input_handler_t input_handler,
+                                   void *user_data);
+void ply_terminal_stop_watching_for_input (ply_terminal_t *terminal,
+                                           ply_terminal_input_handler_t input_handler,
+                                           void *user_data);
 
 #endif
 

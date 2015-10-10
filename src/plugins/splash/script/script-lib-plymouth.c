@@ -19,7 +19,9 @@
  *
  * Written by: Charlie Brej <cbrej@cs.man.ac.uk>
  */
-#define _GNU_SOURCE
+
+#include "config.h"
+
 #include "ply-boot-splash-plugin.h"
 #include "ply-utils.h"
 #include "script.h"
@@ -31,8 +33,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "config.h"
 
 #include "script-lib-plymouth.script.h"
 
@@ -61,12 +61,10 @@ static script_return_t plymouth_get_mode (script_state_t *state,
       case PLY_BOOT_SPLASH_MODE_SHUTDOWN:
         obj = script_obj_new_string ("shutdown");
         break;
-      case PLY_BOOT_SPLASH_MODE_SUSPEND:
-        obj = script_obj_new_string ("suspend");
+      case PLY_BOOT_SPLASH_MODE_UPDATES:
+        obj = script_obj_new_string ("updates");
         break;
-      case PLY_BOOT_SPLASH_MODE_RESUME:
-        obj = script_obj_new_string ("resume");
-        break;
+      case PLY_BOOT_SPLASH_MODE_INVALID:
       default:
         obj = script_obj_new_string ("unknown");
         break;
@@ -87,7 +85,8 @@ script_lib_plymouth_data_t *script_lib_plymouth_setup (script_state_t         *s
   data->script_display_normal_func = script_obj_new_null ();
   data->script_display_password_func = script_obj_new_null ();
   data->script_display_question_func = script_obj_new_null ();
-  data->script_message_func = script_obj_new_null ();
+  data->script_display_message_func = script_obj_new_null ();
+  data->script_hide_message_func = script_obj_new_null ();
   data->script_quit_func = script_obj_new_null ();
   data->mode = mode;
   
@@ -141,9 +140,15 @@ script_lib_plymouth_data_t *script_lib_plymouth_setup (script_state_t         *s
                               "function",
                               NULL);
   script_add_native_function (plymouth_hash,
-                              "SetMessageFunction",
+                              "SetDisplayMessageFunction",
                               plymouth_set_function,
-                              &data->script_message_func,
+                              &data->script_display_message_func,
+                              "function",
+                              NULL);
+  script_add_native_function (plymouth_hash,
+                              "SetHideMessageFunction",
+                              plymouth_set_function,
+                              &data->script_hide_message_func,
                               "function",
                               NULL);
   script_add_native_function (plymouth_hash,
@@ -177,7 +182,8 @@ void script_lib_plymouth_destroy (script_lib_plymouth_data_t *data)
   script_obj_unref (data->script_display_normal_func);
   script_obj_unref (data->script_display_password_func);
   script_obj_unref (data->script_display_question_func);
-  script_obj_unref (data->script_message_func);
+  script_obj_unref (data->script_display_message_func);
+  script_obj_unref (data->script_hide_message_func);
   script_obj_unref (data->script_quit_func);
   free (data);
 }
@@ -294,13 +300,27 @@ void script_lib_plymouth_on_display_question (script_state_t             *state,
   script_obj_unref (ret.object);
 }
 
-void script_lib_plymouth_on_message (script_state_t             *state,
-                                     script_lib_plymouth_data_t *data,
-                                     const char                 *message)
+void script_lib_plymouth_on_display_message (script_state_t             *state,
+                                             script_lib_plymouth_data_t *data,
+                                             const char                 *message)
 {
   script_obj_t *new_message_obj = script_obj_new_string (message);
   script_return_t ret = script_execute_object (state,
-                                               data->script_message_func,
+                                               data->script_display_message_func,
+                                               NULL,
+                                               new_message_obj,
+                                               NULL);
+  script_obj_unref (new_message_obj);
+  script_obj_unref (ret.object);
+}
+
+void script_lib_plymouth_on_hide_message (script_state_t             *state,
+                                          script_lib_plymouth_data_t *data,
+                                          const char                 *message)
+{
+  script_obj_t *new_message_obj = script_obj_new_string (message);
+  script_return_t ret = script_execute_object (state,
+                                               data->script_hide_message_func,
                                                NULL,
                                                new_message_obj,
                                                NULL);

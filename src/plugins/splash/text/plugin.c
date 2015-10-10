@@ -1,6 +1,5 @@
-/* text.c - boot splash plugin
- *
- * Copyright (C) 2008 Red Hat, Inc.
+/*
+ * Copyright (C) 2008-2012 Red Hat, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,8 +16,6 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
  * 02111-1307, USA.
  *
- * Written by: Adam Jackson <ajax@redhat.com>
- *             Ray Strode <rstrode@redhat.com>
  */
 #include "config.h"
 
@@ -49,13 +46,10 @@
 #include "ply-list.h"
 #include "ply-logger.h"
 #include "ply-text-display.h"
-#include "ply-text-progress-bar.h"
+#include "ply-text-step-bar.h"
 #include "ply-utils.h"
 
 #include <linux/kd.h>
-
-#define CLEAR_LINE_SEQUENCE "\033[2K\r\n"
-#define BACKSPACE "\b\033[0K"
 
 typedef enum {
    PLY_BOOT_SPLASH_DISPLAY_NORMAL,
@@ -81,9 +75,11 @@ typedef struct
 {
   ply_boot_splash_plugin_t *plugin;
   ply_text_display_t *display;
-  ply_text_progress_bar_t *progress_bar;
+  ply_text_step_bar_t *step_bar;
 
 } view_t;
+
+ply_boot_splash_plugin_interface_t *ply_boot_splash_plugin_get_interface (void);
 
 static void hide_splash_screen (ply_boot_splash_plugin_t *plugin,
                                 ply_event_loop_t         *loop);
@@ -98,7 +94,7 @@ view_new (ply_boot_splash_plugin_t *plugin,
   view->plugin = plugin;
   view->display = display;
 
-  view->progress_bar = ply_text_progress_bar_new ();
+  view->step_bar = ply_text_step_bar_new ();
 
   return view;
 }
@@ -106,7 +102,7 @@ view_new (ply_boot_splash_plugin_t *plugin,
 static void
 view_free (view_t *view)
 {
-  ply_text_progress_bar_free (view->progress_bar);
+  ply_text_step_bar_free (view->step_bar);
 
   free (view);
 }
@@ -139,11 +135,8 @@ view_show_prompt (view_t     *view,
                   const char *entered_text)
 {
 
-  ply_boot_splash_plugin_t *plugin;
   int display_width, display_height;
   int i;
-
-  plugin = view->plugin;
 
   display_width = ply_text_display_get_number_of_columns (view->display);
   display_height = ply_text_display_get_number_of_rows (view->display);
@@ -184,10 +177,10 @@ view_start_animation (view_t *view)
                                     0xffffff);
   ply_terminal_set_color_hex_value (terminal,
                                     PLY_TERMINAL_COLOR_BLUE,
-                                    0x0073B3);
+                                    0x3465a4);
   ply_terminal_set_color_hex_value (terminal,
                                     PLY_TERMINAL_COLOR_BROWN,
-                                    0x00457E);
+                                    0x979a9b);
 
   ply_text_display_set_background_color (view->display,
                                          PLY_TERMINAL_COLOR_BLACK);
@@ -196,11 +189,11 @@ view_start_animation (view_t *view)
 
   if (plugin->mode == PLY_BOOT_SPLASH_MODE_SHUTDOWN)
     {
-      ply_text_progress_bar_hide (view->progress_bar);
+      ply_text_step_bar_hide (view->step_bar);
       return;
     }
 
-  ply_text_progress_bar_show (view->progress_bar,
+  ply_text_step_bar_show (view->step_bar,
                               view->display);
 }
 
@@ -456,7 +449,7 @@ stop_animation (ply_boot_splash_plugin_t *plugin)
       view = ply_list_node_get_data (node);
       next_node = ply_list_get_next_node (plugin->views, node);
 
-      ply_text_progress_bar_hide (view->progress_bar);
+      ply_text_step_bar_hide (view->step_bar);
 
       node = next_node;
     }
@@ -575,8 +568,8 @@ on_boot_progress (ply_boot_splash_plugin_t *plugin,
       view = ply_list_node_get_data (node);
       next_node = ply_list_get_next_node (plugin->views, node);
 
-      ply_text_progress_bar_set_percent_done (view->progress_bar, percent_done);
-      ply_text_progress_bar_draw (view->progress_bar);
+      ply_text_step_bar_set_percent_done (view->step_bar, percent_done);
+      ply_text_step_bar_draw (view->step_bar);
 
       node = next_node;
     }

@@ -179,11 +179,24 @@ ply_boot_client_connect (ply_boot_client_t *client,
   assert (client->disconnect_handler == NULL);
   assert (client->disconnect_handler_user_data == NULL);
 
-  client->socket_fd = 
-      ply_connect_to_unix_socket (PLY_BOOT_PROTOCOL_SOCKET_PATH + 1, true);
+  client->socket_fd =
+      ply_connect_to_unix_socket (PLY_BOOT_PROTOCOL_TRIMMED_ABSTRACT_SOCKET_PATH,
+                                  PLY_UNIX_SOCKET_TYPE_TRIMMED_ABSTRACT);
 
   if (client->socket_fd < 0)
-    return false;
+    {
+      ply_trace ("could not connect to " PLY_BOOT_PROTOCOL_TRIMMED_ABSTRACT_SOCKET_PATH ": %m");
+      ply_trace ("trying old fallback path " PLY_BOOT_PROTOCOL_OLD_ABSTRACT_SOCKET_PATH);
+
+      client->socket_fd =
+          ply_connect_to_unix_socket (PLY_BOOT_PROTOCOL_OLD_ABSTRACT_SOCKET_PATH,
+                                      PLY_UNIX_SOCKET_TYPE_ABSTRACT);
+      if (client->socket_fd < 0)
+        {
+          ply_trace ("could not connect to " PLY_BOOT_PROTOCOL_OLD_ABSTRACT_SOCKET_PATH ": %m");
+          return false;
+        }
+    }
 
   client->disconnect_handler = disconnect_handler;
   client->disconnect_handler_user_data = user_data;
@@ -204,7 +217,6 @@ ply_boot_client_request_new (ply_boot_client_t                  *client,
 
   assert (client != NULL);
   assert (request_command != NULL);
-  assert (handler != NULL);
 
   request = calloc (1, sizeof (ply_boot_client_request_t));
   request->client = client;
@@ -267,7 +279,10 @@ ply_boot_client_process_incoming_replies (ply_boot_client_t *client)
     goto out;
 
   if (memcmp (byte, PLY_BOOT_PROTOCOL_RESPONSE_TYPE_ACK, sizeof (uint8_t)) == 0)
-      request->handler (request->user_data, client);
+    {
+      if (request->handler != NULL)
+        request->handler (request->user_data, client);
+    }
   else if (memcmp (byte, PLY_BOOT_PROTOCOL_RESPONSE_TYPE_ANSWER, sizeof (uint8_t)) == 0)
     {
       char *answer;
@@ -279,11 +294,15 @@ ply_boot_client_process_incoming_replies (ply_boot_client_t *client)
       if (size > 0)
         {
           if (!ply_read (client->socket_fd, answer, size))
-            goto out;
+            {
+              free (answer);
+              goto out;
+            }
         }
 
       answer[size] = '\0';
-      ((ply_boot_client_answer_handler_t) request->handler) (request->user_data, answer, client);
+      if (request->handler != NULL)
+        ((ply_boot_client_answer_handler_t) request->handler) (request->user_data, answer, client);
       free(answer);
     }
   else if (memcmp (byte, PLY_BOOT_PROTOCOL_RESPONSE_TYPE_MULTIPLE_ANSWERS, sizeof (uint8_t)) == 0)
@@ -311,7 +330,7 @@ ply_boot_client_process_incoming_replies (ply_boot_client_t *client)
           goto out;
         }
 
-      array = ply_array_new ();
+      array = ply_array_new (PLY_ARRAY_ELEMENT_TYPE_POINTER);
 
       p = answer;
       q = p;
@@ -319,22 +338,24 @@ ply_boot_client_process_incoming_replies (ply_boot_client_t *client)
         {
           if (*q == '\0')
             {
-              ply_array_add_element (array, strdup (p));
+              ply_array_add_pointer_element (array, strdup (p));
               p = q + 1;
             }
         }
       free (answer);
 
-      answers = (char **) ply_array_steal_elements (array);
+      answers = (char **) ply_array_steal_pointer_elements (array);
       ply_array_free (array);
 
-      ((ply_boot_client_multiple_answers_handler_t) request->handler) (request->user_data, (const char * const *) answers, client);
+      if (request->handler != NULL)
+        ((ply_boot_client_multiple_answers_handler_t) request->handler) (request->user_data, (const char * const *) answers, client);
 
       ply_free_string_array (answers);
     }
   else if (memcmp (byte, PLY_BOOT_PROTOCOL_RESPONSE_TYPE_NO_ANSWER, sizeof (uint8_t)) == 0)
     {
-      ((ply_boot_client_answer_handler_t) request->handler) (request->user_data, NULL, client);
+      if (request->handler != NULL)
+        ((ply_boot_client_answer_handler_t) request->handler) (request->user_data, NULL, client);
     }
   else
     goto out;
@@ -470,7 +491,6 @@ ply_boot_client_queue_request (ply_boot_client_t                  *client,
   assert (client->loop != NULL);
   assert (request_command != NULL);
   assert (request_argument == NULL || strlen (request_argument) <= UCHAR_MAX);
-  assert (handler != NULL);
 
   if (client->daemon_can_take_request_watch == NULL &&
       client->socket_fd >= 0)
@@ -528,6 +548,32 @@ ply_boot_client_update_daemon (ply_boot_client_t                  *client,
 }
 
 void
+ply_boot_client_change_mode (ply_boot_client_t                  *client,
+                             const char                         *new_mode,
+                             ply_boot_client_response_handler_t  handler,
+                             ply_boot_client_response_handler_t  failed_handler,
+                             void                               *user_data)
+{
+  assert (client != NULL);
+
+  ply_boot_client_queue_request (client, PLY_BOOT_PROTOCOL_REQUEST_TYPE_CHANGE_MODE,
+                                 new_mode, handler, failed_handler, user_data);
+}
+
+void
+ply_boot_client_system_update (ply_boot_client_t                  *client,
+                               const char                         *progress,
+                               ply_boot_client_response_handler_t  handler,
+                               ply_boot_client_response_handler_t  failed_handler,
+                               void                               *user_data)
+{
+  assert (client != NULL);
+
+  ply_boot_client_queue_request (client, PLY_BOOT_PROTOCOL_REQUEST_TYPE_SYSTEM_UPDATE,
+                                 progress, handler, failed_handler, user_data);
+}
+
+void
 ply_boot_client_tell_daemon_to_change_root (ply_boot_client_t                  *client,
                                             const char                         *root_dir,
                                             ply_boot_client_response_handler_t  handler,
@@ -551,7 +597,21 @@ ply_boot_client_tell_daemon_to_display_message (ply_boot_client_t               
   assert (client != NULL);
   assert (message != NULL);
 
-  ply_boot_client_queue_request (client, PLY_BOOT_PROTOCOL_REQUEST_TYPE_MESSAGE,
+  ply_boot_client_queue_request (client, PLY_BOOT_PROTOCOL_REQUEST_TYPE_SHOW_MESSAGE,
+                                 message, handler, failed_handler, user_data);
+}
+
+void
+ply_boot_client_tell_daemon_to_hide_message (ply_boot_client_t                  *client,
+                                             const char                         *message,
+                                             ply_boot_client_response_handler_t  handler,
+                                             ply_boot_client_response_handler_t  failed_handler,
+                                             void                               *user_data)
+{
+  assert (client != NULL);
+  assert (message != NULL);
+
+  ply_boot_client_queue_request (client, PLY_BOOT_PROTOCOL_REQUEST_TYPE_HIDE_MESSAGE,
                                  message, handler, failed_handler, user_data);
 }
 
@@ -743,6 +803,17 @@ ply_boot_client_tell_daemon_about_error (ply_boot_client_t                  *cli
 }
 
 void
+ply_boot_client_flush (ply_boot_client_t *client)
+{
+  assert (client != NULL);
+
+  while (ply_list_get_length (client->requests_to_send) > 0)
+    {
+      ply_event_loop_process_pending_events (client->loop);
+    }
+}
+
+void
 ply_boot_client_disconnect (ply_boot_client_t *client)
 {
   assert (client != NULL);
@@ -798,137 +869,4 @@ ply_boot_client_attach_to_event_loop (ply_boot_client_t *client,
 
 }
 
-#ifdef PLY_BOOT_CLIENT_ENABLE_TEST
-
-#include <stdio.h>
-
-#include "ply-event-loop.h"
-#include "ply-boot-client.h"
-
-static void
-on_pinged (ply_event_loop_t *loop)
-{
-  printf ("PING!\n");
-}
-
-static void
-on_ping_failed (ply_event_loop_t *loop)
-{
-  printf ("PING FAILED! %m\n");
-  ply_event_loop_exit (loop, 1);
-}
-
-static void
-on_update (ply_event_loop_t *loop)
-{
-  printf ("UPDATE!\n");
-}
-
-static void
-on_update_failed (ply_event_loop_t *loop)
-{
-  printf ("UPDATE FAILED! %m\n");
-  ply_event_loop_exit (loop, 1);
-}
-
-static void
-on_newroot (ply_event_loop_t *loop)
-{
-  printf ("NEWROOT!\n");
-}
-
-static void
-on_system_initialized (ply_event_loop_t *loop)
-{
-  printf ("SYSTEM INITIALIZED!\n");
-}
-
-static void
-on_system_initialized_failed (ply_event_loop_t *loop)
-{
-  printf ("SYSTEM INITIALIZATION REQUEST FAILED!\n");
-  ply_event_loop_exit (loop, 1);
-}
-
-static void
-on_quit (ply_event_loop_t *loop)
-{
-  printf ("QUIT!\n");
-  ply_event_loop_exit (loop, 0);
-}
-
-static void
-on_quit_failed (ply_event_loop_t *loop)
-{
-  printf ("QUIT FAILED! %m\n");
-  ply_event_loop_exit (loop, 2);
-}
-
-static void
-on_disconnect (ply_event_loop_t *loop)
-{
-  printf ("DISCONNECT!\n");
-  ply_event_loop_exit (loop, 1);
-}
-
-int
-main (int    argc,
-      char **argv)
-{
-  ply_event_loop_t *loop;
-  ply_boot_client_t *client;
-  int exit_code;
-
-  exit_code = 0;
-
-  loop = ply_event_loop_new ();
-
-  client = ply_boot_client_new ();
-
-  if (!ply_boot_client_connect (client, 
-                                (ply_boot_client_disconnect_handler_t) on_disconnect,
-                                loop))
-    {
-      perror ("could not start boot client");
-      return errno;
-    }
-
-  ply_boot_client_attach_to_event_loop (client, loop);
-  ply_boot_client_ping_daemon (client, 
-                               (ply_boot_client_response_handler_t) on_pinged,
-                               (ply_boot_client_response_handler_t) on_ping_failed,
-                               loop);
-
-  ply_boot_client_update_daemon (client, 
-                                 "loading",
-                                 (ply_boot_client_response_handler_t) on_update,
-                                 (ply_boot_client_response_handler_t) on_update_failed,
-                                 loop);
-
-  ply_boot_client_update_daemon (client, 
-                                 "loading more",
-                                 (ply_boot_client_response_handler_t) on_update,
-                                 (ply_boot_client_response_handler_t) on_update_failed,
-                                 loop);
-
-  ply_boot_client_tell_daemon_system_is_initialized (client, 
-                                       (ply_boot_client_response_handler_t) 
-                                       on_system_initialized,
-                                       (ply_boot_client_response_handler_t) 
-                                       on_system_initialized_failed,
-                                       loop);
-
-  ply_boot_client_tell_daemon_to_quit (client, 
-                                       (ply_boot_client_response_handler_t) on_quit,
-                                       (ply_boot_client_response_handler_t) on_quit_failed,
-                                       loop);
-
-  exit_code = ply_event_loop_run (loop);
-
-  ply_boot_client_free (client);
-
-  return exit_code;
-}
-
-#endif /* PLY_BOOT_CLIENT_ENABLE_TEST */
 /* vim: set ts=4 sw=4 expandtab autoindent cindent cino={.5s,(0: */

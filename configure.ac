@@ -1,11 +1,12 @@
-AC_INIT([plymouth],[0.8.3],[https://bugs.freedesktop.org/enter_bug.cgi?product=plymouth])
+AC_INIT([plymouth],[0.9.0],[https://bugs.freedesktop.org/enter_bug.cgi?product=plymouth])
 AC_CONFIG_SRCDIR(src/main.c)
 AC_CONFIG_HEADER(config.h)
 AC_CONFIG_AUX_DIR(build-tools)
 
 AC_USE_SYSTEM_EXTENSIONS
+AC_SYS_LARGEFILE
 AC_PROG_AWK
-AC_PROG_CC
+AC_PROG_CC_STDC
 AM_PROG_CC_C_O
 AC_HEADER_STDC
 AC_C_CONST
@@ -15,10 +16,10 @@ m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 AM_MAINTAINER_MODE([enable])
 
 PKG_PROG_PKG_CONFIG
-LT_INIT
+LT_INIT([dlopen disable-static pic-only])
 
 ## increment if the interface has additions, changes, removals.
-LT_CURRENT=2
+LT_CURRENT=3
 
 ## increment any time the source changes; set to
 ##  0 if you increment CURRENT
@@ -27,7 +28,7 @@ LT_REVISION=0
 ## increment if any interfaces have been added; set to 0
 ## if any interfaces have been changed or removed. removal has
 ## precedence over adding, so set to 0 if both happened.
-LT_AGE=0
+LT_AGE=1
 
 AC_SUBST(LT_CURRENT)
 AC_SUBST(LT_REVISION)
@@ -37,11 +38,18 @@ PKG_CHECK_MODULES(IMAGE, [libpng >= 1.2.16 ])
 AC_SUBST(IMAGE_CFLAGS)
 AC_SUBST(IMAGE_LIBS)
 
+PKG_CHECK_MODULES(UDEV, [libudev]);
+AC_SUBST(UDEV_CFLAGS)
+AC_SUBST(UDEV_LIBS)
+
 PLYMOUTH_CFLAGS=""
 PLYMOUTH_LIBS="-lm -lrt -ldl"
 
 AC_SUBST(PLYMOUTH_CFLAGS)
 AC_SUBST(PLYMOUTH_LIBS)
+
+AC_PATH_PROG([SYSTEMD_ASK_PASSWORD_AGENT], [systemd-tty-ask-password-agent])
+AC_PATH_PROG([UDEVADM], [udevadm])
 
 AC_ARG_ENABLE(pango, AS_HELP_STRING([--enable-pango],[enable building with pango, disabled there is no encryption prompts]),enable_pango=$enableval,enable_pango=yes)
 AM_CONDITIONAL(ENABLE_PANGO,  [test "$enable_pango" = yes])
@@ -52,52 +60,33 @@ if test x$enable_pango = xyes; then
   AC_SUBST(PANGO_LIBS)
 fi
 
-PKG_CHECK_MODULES(GTK, [gtk+-2.0 >= 2.12.0 ])
-AC_SUBST(GTK_CFLAGS)
-AC_SUBST(GTK_LIBS)
+AC_ARG_ENABLE(gtk, AS_HELP_STRING([--enable-gtk],[enable building with gtk, disabled there is no log viewer or x11 redenderer]),enable_gtk=$enableval,enable_gtk=yes)
+AM_CONDITIONAL(ENABLE_GTK,  [test "$enable_gtk" = yes])
 
-PKG_CHECK_MODULES(DRM, [libdrm libdrm_intel libdrm_radeon libdrm_nouveau])
-
-OLD_CFLAGS="$CFLAGS"
-CFLAGS="$CFLAGS $DRM_CFLAGS"
-AC_MSG_CHECKING([if i915_drm.h, radeon_drm.h and nouveau_drm.h are in include path])
-AC_COMPILE_IFELSE(AC_LANG_PROGRAM(
-[[
-  #include <stdint.h>
-  #include <stdlib.h>
-  #include "i915_drm.h"
-  #include "radeon_drm.h"
-  #include "nouveau_drm.h"
-]],[[]]),[found_drm_kernel_headers=yes],[found_drm_kernel_headers=no])
-
-if test "$found_drm_kernel_headers" = "yes"; then
-  AC_MSG_RESULT([yes])
-else
-  AC_MSG_RESULT([no])
-  AC_MSG_CHECKING([if we can find them anyway])
-
-  MORE_DRM_CFLAGS="-I`$PKG_CONFIG --variable includedir libdrm`/drm"
-  CFLAGS="$CFLAGS $MORE_DRM_CFLAGS"
-  AC_COMPILE_IFELSE(AC_LANG_PROGRAM(
-  [[
-    #include <stdint.h>
-    #include <stdlib.h>
-    #include "i915_drm.h"
-    #include "radeon_drm.h"
-    #include "nouveau_drm.h"
-  ]],[[]]),[found_drm_kernel_headers=yes],[found_drm_kernel_headers=no])
-
-  if test "$found_drm_kernel_headers" = "yes"; then
-    AC_MSG_RESULT([yes])
-    DRM_CFLAGS="$DRM_CFLAGS $MORE_DRM_CFLAGS"
-  else
-    AC_MSG_RESULT([no])
-    AC_MSG_ERROR([Could not find i915_drm.h, radeon_drm.h and/or nouveau_drm.h])
-  fi
+if test x$enable_gtk = xyes; then
+  PKG_CHECK_MODULES(GTK, [gtk+-2.0 >= 2.12.0 ])
+  AC_SUBST(GTK_CFLAGS)
+  AC_SUBST(GTK_LIBS)
 fi
-CFLAGS="$OLD_CFLAGS"
-AC_SUBST(DRM_CFLAGS)
-AC_SUBST(DRM_LIBS)
+
+AC_ARG_ENABLE(drm, AS_HELP_STRING([--enable-drm-renderer],[enable building drm kms support]),enable_drm_renderer=$enableval,enable_drm_renderer=yes)
+AM_CONDITIONAL(ENABLE_DRM_RENDERER,  [test "$enable_drm_renderer" = yes])
+
+if test x$enable_drm_renderer = xyes; then
+  PKG_CHECK_MODULES(DRM, [libdrm])
+fi
+
+AC_ARG_ENABLE(documentation,
+              AS_HELP_STRING([--enable-documentation],
+                             [build documentation]),,
+              enable_documentation=yes)
+if test x$enable_documentation = xyes; then
+   AC_PATH_PROG([XSLTPROC], [xsltproc])
+   if test x$XSLTPROC = x; then
+      AC_MSG_ERROR([xsltproc is required to build documentation])
+   fi
+fi
+AM_CONDITIONAL(BUILD_DOCUMENTATION, test x$enable_documentation = xyes)
 
 AC_ARG_ENABLE(tracing, AS_HELP_STRING([--enable-tracing],[enable verbose tracing code]),enable_tracing=$enableval,enable_tracing=yes)
 
@@ -105,14 +94,36 @@ if test x$enable_tracing = xyes; then
   AC_DEFINE(PLY_ENABLE_TRACING, 1, [Build in verbose debug tracing spew])
 fi
 
-AC_ARG_ENABLE(tests, AS_HELP_STRING([--enable-tests],[build tests]),enable_tests=$enableval,enable_tests=yes)
-
-AM_CONDITIONAL(ENABLE_TESTS,  [test "$enable_tests" = yes])
-
 AC_ARG_ENABLE(gdm-transition, AS_HELP_STRING([--enable-gdm-transition],[enable smooth transition to gdm]),enable_gdm_transition=$enableval,enable_gdm_transition=no)
 
 if test x$enable_gdm_transition = xyes; then
-  AC_DEFINE(PLY_ENABLE_GDM_TRANSITION, 1, [Enable smooth transition to GDM])
+  AC_DEFINE(PLY_ENABLE_DEPRECATED_GDM_TRANSITION, 1, [Enable deprecated smooth transition to GDM])
+fi
+
+AC_ARG_ENABLE(upstart-monitoring, AS_HELP_STRING([--enable-upstart-monitoring],[listen for messages on the Upstart D-Bus interface]),enable_upstart_monitoring=$enableval,enable_upstart_monitoring=no)
+if test x$enable_upstart_monitoring = xyes; then
+  PKG_CHECK_MODULES(DBUS, [dbus-1])
+  AC_SUBST(DBUS_CFLAGS)
+  AC_SUBST(DBUS_LIBS)
+  AC_CHECK_HEADERS([ncursesw/term.h ncurses/term.h term.h], [break])
+  AC_CHECK_LIB([ncursesw], [initscr],
+    [CURSES_LIBS="$CURSES_LIBS -lncursesw"],
+    [AC_CHECK_LIB([ncurses], [initscr],
+      [CURSES_LIBS="$CURSES_LIBS -lncurses"],
+      [AC_CHECK_LIB([curses], [initscr],
+        [CURSES_LIBS="$CURSES_LIBS -lcurses"],
+        [AC_MSG_ERROR([no curses library found])])])])
+  AC_SUBST(CURSES_LIBS)
+fi
+AM_CONDITIONAL(ENABLE_UPSTART_MONITORING, [test "$enable_upstart_monitoring" = yes])
+
+AC_ARG_ENABLE(systemd-integration, AS_HELP_STRING([--enable-systemd-integration],[coordinate boot up with systemd]),enable_systemd_integration=$enableval,enable_systemd_integration=no)
+AM_CONDITIONAL(ENABLE_SYSTEMD_INTEGRATION, [test "$enable_systemd_integration" = yes])
+
+if test x$enable_systemd_integration = xyes; then
+  AC_DEFINE(PLY_ENABLE_SYSTEMD_INTEGRATION, 1, [Coordinate boot up with systemd])
+  SYSTEMD_UNIT_DIR=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
+  AC_SUBST(SYSTEMD_UNIT_DIR)
 fi
 
 AC_ARG_WITH(system-root-install, AS_HELP_STRING([--with-system-root-install],[Install client in /bin and daemon in /sbin]),with_system_root_install=${withval},with_system_root_install=yes)
@@ -121,22 +132,39 @@ AM_CONDITIONAL(WITH_SYSTEM_ROOT_INSTALL,  [test "$with_system_root_install" = ye
 if test x$with_system_root_install = xyes; then
   plymouthclientdir=/bin
   plymouthdaemondir=/sbin
+  plymouthruntimedir=/run/plymouth
 else
   plymouthclientdir=$bindir
   plymouthdaemondir=$sbindir
+  plymouthruntimedir=$localstatedir/run/plymouth
 fi
 AC_SUBST(plymouthclientdir)
 AC_SUBST(plymouthdaemondir)
+AC_SUBST(plymouthruntimedir)
 
-AC_ARG_WITH(rhgb-compat-link, AS_HELP_STRING([--with-rhgb-compat-link],[Install /usr/bin/rhgb-client compatability symlink]),with_rhgb_compat_link=${withval},with_rhgb_compat_link=yes)
+AS_AC_EXPAND(PLYMOUTH_CLIENT_DIR, $plymouthclientdir)
+AS_AC_EXPAND(PLYMOUTH_DAEMON_DIR, $plymouthdaemondir)
+AS_AC_EXPAND(PLYMOUTH_RUNTIME_DIR, $plymouthruntimedir)
+
+AC_ARG_WITH(rhgb-compat-link, AS_HELP_STRING([--with-rhgb-compat-link],[Install /usr/bin/rhgb-client compatability symlink]),with_rhgb_compat_link=${withval},with_rhgb_compat_link=no)
 AM_CONDITIONAL(WITH_RHGB_COMPAT_LINK,  [test "$with_rhgb_compat_link" = yes])
 
-AC_ARG_WITH(gdm-autostart-file, AS_HELP_STRING([--with-gdm-autostart-file],[start log viewer from gdm on boot errors]),with_gdm_autostart_file=$withval,with_gdm_autostart_file=yes)
+AC_ARG_WITH(log-viewer, AS_HELP_STRING([--with-log-viewer],[Install plymouth log viewer]),with_log_viewer=${withval},with_log_viewer=no)
+AM_CONDITIONAL(WITH_LOG_VIEWER,  [test "$with_log_viewer" = yes])
 
+if test x$with_log_viewer = xyes; then
+  if test x$enable_gtk = xno; then
+    AC_MSG_ERROR([log viewer enabled bug gtk disabled])
+  fi
+  AC_ARG_WITH(gdm-autostart-file, AS_HELP_STRING([--with-gdm-autostart-file],[start log viewer from gdm on boot errors]),with_gdm_autostart_file=$withval,with_gdm_autostart_file=yes)
+else
+  with_gdm_autostart_file=no
+fi
 AM_CONDITIONAL(START_FROM_GDM,  [test "$with_gdm_autostart_file" = yes])
 
 AC_ARG_WITH(logo, AS_HELP_STRING([--with-logo],[logo used by boot splash plugins]),logofile=${withval},logofile=$datadir/plymouth/bizcom.png)
 AC_SUBST(logofile)
+AS_AC_EXPAND(PLYMOUTH_LOGO_FILE, $logofile)
 
 AM_CONDITIONAL(INSTALL_FALLBACK_LOGO,  [test "$logofile" = $datadir/plymouth/bizcom.png])
 
@@ -149,7 +177,7 @@ AC_SUBST(background_start_color)
 AC_ARG_WITH(background-end-color-stop, AS_HELP_STRING([--with-background-end-color-stop],[first color end in background gradients used by boot splash plugins]),background_end_color=${withval},background_end_color=0x3a362f)
 AC_SUBST(background_end_color)
 
-AC_ARG_WITH(release-file, AS_HELP_STRING([--with-release-file=<path_to_release_file>],[Release File to use to detect distribution (by default /etc/system-reelase)]),RELEASE_FILE=${withval},RELEASE_FILE=/etc/system-release)
+AC_ARG_WITH(release-file, AS_HELP_STRING([--with-release-file=<path_to_release_file>],[Release File to use to detect distribution (by default /etc/system-release)]),RELEASE_FILE=${withval},RELEASE_FILE=/etc/system-release)
 
 AC_SUBST(RELEASE_FILE)
 AC_DEFINE_UNQUOTED(RELEASE_FILE, "$RELEASE_FILE", [Release file path])
@@ -168,7 +196,7 @@ AC_DEFUN([PLYMOUTH_CC_TRY_FLAG], [
   plymouth_save_CFLAGS="$CFLAGS"
   CFLAGS="$CFLAGS $1"
 
-  AC_COMPILE_IFELSE([ ], [plymouth_cc_flag=yes], [plymouth_cc_flag=no])
+  AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ ]], [[ ]])], [plymouth_cc_flag=yes], [plymouth_cc_flag=no])
   CFLAGS="$plymouth_save_CFLAGS"
 
   if test "x$plymouth_cc_flag" = "xyes"; then
@@ -197,7 +225,7 @@ if test "$GCC" = "yes" -a "$set_more_warnings" != "no"; then
    -Wchar-subscripts -Wmissing-declarations -Wmissing-prototypes \
    -Wwrite-strings -Wnested-externs -Wpointer-arith \
    -Wswitch-enum -Wstrict-aliasing=2 -Winit-self -Wunsafe-loop-optimizations \
-   -Wno-missing-field-initializers -Wno-unused-parameter \
+   -Wno-missing-field-initializers -Wno-unused-parameter -Wno-unused-result \
    -Wcast-align -Wsign-compare -Wp,-D_FORTIFY_SOURCE=2"
 elif test "$GCC" = "yes"; then
   AC_MSG_RESULT(no)
@@ -267,6 +295,7 @@ AC_CONFIG_FILES([Makefile
            src/plugins/splash/Makefile
            src/plugins/splash/throbgress/Makefile
            src/plugins/splash/fade-throbber/Makefile
+           src/plugins/splash/tribar/Makefile
            src/plugins/splash/text/Makefile
            src/plugins/splash/details/Makefile
            src/plugins/splash/space-flares/Makefile
@@ -278,22 +307,34 @@ AC_CONFIG_FILES([Makefile
            src/client/ply-boot-client.pc
            src/client/Makefile
            src/viewer/Makefile
-           src/tests/Makefile
-           src/libply/tests/Makefile
-           src/client/tests/Makefile
+           src/upstart-bridge/Makefile
            themes/Makefile
            themes/spinfinity/Makefile
            themes/fade-in/Makefile
+           themes/tribar/Makefile
            themes/text/Makefile
            themes/details/Makefile
            themes/solar/Makefile
            themes/glow/Makefile
+           themes/spinner/Makefile
            themes/script/Makefile
            images/Makefile
 	   scripts/plymouth-generate-initrd
 	   scripts/plymouth-populate-initrd
 	   scripts/plymouth-set-default-theme
            scripts/Makefile
+           systemd-units/plymouth-halt.service
+           systemd-units/plymouth-kexec.service
+           systemd-units/plymouth-poweroff.service
+           systemd-units/plymouth-quit.service
+           systemd-units/plymouth-quit-wait.service
+           systemd-units/plymouth-read-write.service
+           systemd-units/plymouth-reboot.service
+           systemd-units/plymouth-start.service
+           systemd-units/plymouth-switch-root.service
+           systemd-units/systemd-ask-password-plymouth.path
+           systemd-units/systemd-ask-password-plymouth.service
+           systemd-units/Makefile
            docs/Makefile
 ])
 AC_OUTPUT

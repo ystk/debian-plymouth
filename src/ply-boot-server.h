@@ -36,6 +36,14 @@ typedef void (* ply_boot_server_update_handler_t) (void              *user_data,
                                                    const char        *status,
                                                    ply_boot_server_t *server);
 
+typedef void (* ply_boot_server_change_mode_handler_t) (void              *user_data,
+                                                        const char        *mode,
+                                                        ply_boot_server_t *server);
+
+typedef void (* ply_boot_server_system_update_handler_t) (void              *user_data,
+                                                          int                progress,
+                                                          ply_boot_server_t *server);
+
 typedef void (* ply_boot_server_newroot_handler_t) (void              *user_data,
                                                     const char        *root_dir,
                                                     ply_boot_server_t *server);
@@ -63,6 +71,9 @@ typedef void (* ply_boot_server_ask_question_handler_t)      (void              
 typedef void (* ply_boot_server_display_message_handler_t)   (void              *user_data,
                                                               const char        *message,
                                                               ply_boot_server_t *server);
+typedef void (* ply_boot_server_hide_message_handler_t)   (void              *user_data,
+                                                           const char        *message,
+                                                           ply_boot_server_t *server);
 typedef void (* ply_boot_server_watch_for_keystroke_handler_t) (void              *user_data,
                                                                 const char        *keys,
                                                                 ply_trigger_t     *answer,
@@ -94,9 +105,12 @@ typedef bool (* ply_boot_server_has_active_vt_handler_t) (void              *use
 
 #ifndef PLY_HIDE_FUNCTION_DECLARATIONS
 ply_boot_server_t *ply_boot_server_new (ply_boot_server_update_handler_t update_handler,
+                                        ply_boot_server_change_mode_handler_t change_mode_handler,
+                                        ply_boot_server_system_update_handler_t system_update_handler,
                                         ply_boot_server_ask_for_password_handler_t ask_for_password_handler,
                                         ply_boot_server_ask_question_handler_t ask_question_handler,
                                         ply_boot_server_display_message_handler_t display_message_handler,
+                                        ply_boot_server_hide_message_handler_t hide_message_handler,
                                         ply_boot_server_watch_for_keystroke_handler_t watch_for_keystroke_handler,
                                         ply_boot_server_ignore_keystroke_handler_t ignore_keystroke_handler,
                                         ply_boot_server_progress_pause_handler_t on_progress_pause,

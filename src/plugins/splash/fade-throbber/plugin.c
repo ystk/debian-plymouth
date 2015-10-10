@@ -82,6 +82,7 @@ typedef struct
   ply_list_t *stars;
   ply_entry_t *entry;
   ply_label_t *label;
+  ply_label_t *message_label;
   ply_rectangle_t lock_area;
   double logo_opacity;
 } view_t;
@@ -103,6 +104,8 @@ struct _ply_boot_splash_plugin
 
   uint32_t is_animating : 1;
 };
+
+ply_boot_splash_plugin_interface_t *ply_boot_splash_plugin_get_interface (void);
 
 static void
 view_show_prompt (view_t     *view,
@@ -140,11 +143,7 @@ view_show_prompt (view_t     *view,
 
   if (prompt != NULL)
     {
-      int label_width, label_height;
-
       ply_label_set_text (view->label, prompt);
-      label_width = ply_label_get_width (view->label);
-      label_height = ply_label_get_height (view->label);
 
       x = view->lock_area.x;
       y = view->lock_area.y + view->lock_area.height;
@@ -255,6 +254,8 @@ view_new (ply_boot_splash_plugin_t *plugin,
   view->stars = ply_list_new ();
   view->label = ply_label_new ();
 
+  view->message_label = ply_label_new ();
+
   return view;
 }
 
@@ -263,6 +264,7 @@ view_free (view_t *view)
 {
 
   ply_entry_free (view->entry);
+  ply_label_free (view->message_label);
   free_stars (view);
 
   free (view);
@@ -429,7 +431,6 @@ view_animate_at_time (view_t  *view,
   ply_boot_splash_plugin_t *plugin;
   ply_list_node_t *node;
   double logo_opacity;
-  uint32_t *logo_data, *star_data;
   long logo_x, logo_y;
   long logo_width, logo_height;
   unsigned long screen_width, screen_height;
@@ -439,7 +440,6 @@ view_animate_at_time (view_t  *view,
 
   logo_width = ply_image_get_width (plugin->logo_image);
   logo_height = ply_image_get_height (plugin->logo_image);
-  logo_data = ply_image_get_data (plugin->logo_image);
 
   screen_width = ply_pixel_display_get_width (view->display);
   screen_height = ply_pixel_display_get_height (view->display);
@@ -447,7 +447,6 @@ view_animate_at_time (view_t  *view,
   logo_x = (screen_width / 2) - (logo_width / 2);
   logo_y = (screen_height / 2) - (logo_height / 2);
 
-  star_data = ply_image_get_data (plugin->star_image);
   star_width = ply_image_get_width (plugin->star_image);
   star_height = ply_image_get_height (plugin->star_image);
 
@@ -616,13 +615,6 @@ stop_animation (ply_boot_splash_plugin_t *plugin)
 }
 
 static void
-on_interrupt (ply_boot_splash_plugin_t *plugin)
-{
-  ply_event_loop_exit (plugin->loop, 1);
-  stop_animation (plugin);
-}
-
-static void
 detach_from_event_loop (ply_boot_splash_plugin_t *plugin)
 {
   plugin->loop = NULL;
@@ -636,10 +628,7 @@ draw_background (view_t             *view,
                  int                 width,
                  int                 height)
 {
-  ply_boot_splash_plugin_t *plugin;
   ply_rectangle_t area;
-
-  plugin = view->plugin;
 
   area.x = x;
   area.y = y;
@@ -744,14 +733,8 @@ on_draw (view_t                   *view,
          int                       height)
 {
   ply_boot_splash_plugin_t *plugin;
-  ply_rectangle_t area;
 
   plugin = view->plugin;
-
-  area.x = x;
-  area.y = y;
-  area.width = width;
-  area.height = height;
 
   draw_background (view, pixel_buffer, x, y, width, height);
 
@@ -759,6 +742,10 @@ on_draw (view_t                   *view,
     draw_normal_view (view, pixel_buffer, x, y, width, height);
   else
     draw_prompt_view (view, pixel_buffer, x, y, width, height);
+
+  ply_label_draw_area (view->message_label,
+                       pixel_buffer,
+                       x, y, width, height);
 }
 
 static void
@@ -831,10 +818,6 @@ show_splash_screen (ply_boot_splash_plugin_t *plugin,
   ply_event_loop_watch_for_exit (loop, (ply_event_loop_exit_handler_t)
                                  detach_from_event_loop,
                                  plugin);
-  ply_event_loop_watch_signal (plugin->loop,
-                               SIGINT,
-                               (ply_event_handler_t) 
-                               on_interrupt, plugin);
 
   if (!load_views (plugin))
     {
@@ -949,6 +932,30 @@ update_status (ply_boot_splash_plugin_t *plugin,
   assert (plugin != NULL);
 
   add_stars (plugin);
+}
+
+static void
+show_message (ply_boot_splash_plugin_t *plugin,
+              const char               *message)
+{
+  ply_trace ("Showing message '%s'", message);
+  ply_list_node_t *node;
+  node = ply_list_get_first_node (plugin->views);
+  while (node != NULL)
+    {
+      ply_list_node_t *next_node;
+      view_t *view;
+
+      view = ply_list_node_get_data (node);
+      next_node = ply_list_get_next_node (plugin->views, node);
+      ply_label_set_text (view->message_label, message);
+      ply_label_show (view->message_label, view->display, 10, 10);
+
+      ply_pixel_display_draw_area (view->display, 10, 10,
+                                   ply_label_get_width (view->message_label),
+                                   ply_label_get_height(view->message_label));
+      node = next_node;
+    }
 }
 
 static void
@@ -1078,6 +1085,13 @@ display_question (ply_boot_splash_plugin_t *plugin,
 }
 
 
+static void
+display_message (ply_boot_splash_plugin_t *plugin,
+                 const char               *message)
+{
+  show_message (plugin, message);
+}
+
 ply_boot_splash_plugin_interface_t *
 ply_boot_splash_plugin_get_interface (void)
 {
@@ -1093,6 +1107,7 @@ ply_boot_splash_plugin_get_interface (void)
       .display_normal = display_normal,
       .display_password = display_password,
       .display_question = display_question,
+      .display_message = display_message,
     };
 
   return &plugin_interface;
